@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Turkcell Performans Dashboard - Dinamik</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+
+    <style>
+        :root { --t-blue: #002855; --t-yellow: #FFCB05; --t-light: #0047BB; --bg: #f4f6f9; }
+        body { font-family: 'Segoe UI', sans-serif; background: var(--bg); margin: 0; display: flex; }
+
+        .sidebar { width: 320px; background: var(--t-blue); height: 100vh; color: white; padding: 25px; position: fixed; box-sizing: border-box; }
+        .sidebar h2 { color: var(--t-yellow); border-bottom: 2px solid var(--t-yellow); padding-bottom: 10px; margin-bottom: 25px; }
+        .sidebar label { display: block; margin: 15px 0 5px; font-weight: bold; font-size: 0.85rem; }
+        select { width: 100%; padding: 12px; border-radius: 8px; border: none; margin-bottom: 10px; font-size: 0.95rem; }
+
+        .content { margin-left: 320px; padding: 30px; width: 100%; box-sizing: border-box; }
+        .header { background: white; padding: 20px; border-radius: 12px; border-left: 10px solid var(--t-yellow); margin-bottom: 25px; display: flex; justify-content: space-between; align-items: center; }
+        .header h1 { margin: 0; color: var(--t-blue); }
+
+        .top-row { display: grid; grid-template-columns: 1.5fr 1fr; gap: 20px; margin-bottom: 25px; }
+        .card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }
+
+        .kpi-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-top: 20px; }
+        .kpi-box { background: var(--bg); padding: 15px; border-radius: 10px; text-align: center; }
+        .kpi-box span { font-size: 0.75rem; color: #666; text-transform: uppercase; }
+        .kpi-box h3 { margin: 5px 0 0; color: var(--t-blue); font-size: 1.5rem; }
+
+        .chart-title { color: var(--t-blue); margin-top: 0; border-bottom: 1px solid #eee; padding-bottom: 10px; margin-bottom: 15px; }
+        #status { margin-top: 20px; font-size: 0.7rem; color: var(--t-yellow); opacity: 0.7; }
+    </style>
+</head>
+<body>
+
+<div class="sidebar">
+    <h2>FİLTRELER</h2>
+
+    <label>1. BÖLGE SEÇİMİ</label>
+    <select id="regionSelect" onchange="filterPeople()">
+        <option value="Hepsi">Tüm Türkiye</option>
+    </select>
+
+    <label>2. KİŞİ SEÇİMİ</label>
+    <select id="personSelect" onchange="updateView()"></select>
+
+    <div id="status">Veri yükleniyor...</div>
+
+    <div style="margin-top: 40px; background: rgba(255,255,255,0.05); padding: 15px; border-radius: 10px; font-size: 0.75rem; border: 1px dashed var(--t-yellow);">
+        <strong>BİLGİ:</strong> Radar grafiğindeki sarı kesikli çizgiler kriterin alabileceği <strong>maksimum (tavan)</strong> puanı temsil eder.
+    </div>
+</div>
+
+<div class="content">
+    <div class="header">
+        <h1>6 Sigma Performans Analiz Paneli</h1>
+        <img src="https://upload.wikimedia.org/wikipedia/en/thumb/0/05/Turkcell_logo.svg/1200px-Turkcell_logo.svg.png" height="40">
+    </div>
+
+    <div class="card" style="margin-bottom: 25px;">
+        <h3 class="chart-title" id="top10Title">Türkiye Geneli En İyi 10 Performans</h3>
+        <canvas id="top10Chart" height="100"></canvas>
+    </div>
+
+    <div class="top-row">
+        <div class="card">
+            <h3 class="chart-title" id="personTitle">Kişi Karnesi</h3>
+            <div class="kpi-grid">
+                <div class="kpi-box"><span>Bölge</span><h3 id="kpiRegion">-</h3></div>
+                <div class="kpi-box"><span>Puan</span><h3 id="kpiScore">0</h3></div>
+                <div class="kpi-box"><span>Sıra</span><h3 id="kpiRank">#0</h3></div>
+            </div>
+            <div style="margin-top: 20px;">
+                <canvas id="radarChart"></canvas>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3 class="chart-title">Bölgesel Ortalamalar</h3>
+            <canvas id="regionBarChart"></canvas>
+            <div style="margin-top: 30px; font-size: 0.8rem; color: #555;">
+                <p><strong>Karne Kırılımı:</strong></p>
+                <ul>
+                    <li>Bütçe Değişim (25p)</li>
+                    <li>Yenileme (20p)</li>
+                    <li>Fesih İbra (20p)</li>
+                    <li>Rollout (15p)</li>
+                    <li>Sabit Artış (10p)</li>
+                    <li>Genel İşlem (10p)</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let allData = [];
+    let radarChart, top10Chart, regionBarChart;
+
+    // 1. CSV'DEN VERİLERİ ÇEKME
+    function loadData() {
+        Papa.parse("data.csv", {
+            download: true,
+            header: true,
+            dynamicTyping: true,
+            skipEmptyLines: true,
+            complete: function(results) {
+                allData = results.data;
+                initApp();
+                document.getElementById('status').innerText = "Veri Bağlantısı: OK";
+            },
+            error: function() {
+                document.getElementById('status').innerText = "HATA: data.csv bulunamadı!";
+            }
+        });
+    }
+
+    function initApp() {
+        // Bölgeleri Select'e doldur
+        const regions = [...new Set(allData.map(d => d.BÖLGE))];
+        const rSelect = document.getElementById('regionSelect');
+        regions.forEach(r => rSelect.add(new Option(r, r)));
+
+        initCharts();
+        filterPeople();
+    }
+
+    function initCharts() {
+        // Radar Chart Init
+        const ctxRadar = document.getElementById('radarChart').getContext('2d');
+        radarChart = new Chart(ctxRadar, {
+            type: 'radar',
+            data: {
+                labels: ['Bütçe Değ.', 'Yenileme', 'Fesih İbra', 'Rollout', 'Sabit Artış', 'Genel İşlem'],
+                datasets: [
+                    {
+                        label: 'Kişi Performansı',
+                        data: [0,0,0,0,0,0],
+                        backgroundColor: 'rgba(0, 71, 187, 0.5)',
+                        borderColor: '#0047BB',
+                        pointBackgroundColor: '#002855',
+                        borderWidth: 2
+                    },
+                    {
+                        label: 'Maksimum Puanlar',
+                        data: [25, 20, 20, 15, 10, 10],
+                        backgroundColor: 'rgba(255, 203, 5, 0.05)',
+                        borderColor: '#FFCB05',
+                        borderWidth: 1,
+                        borderDash: [5, 5],
+                        pointRadius: 0
+                    }
+                ]
+            },
+            options: {
+                scales: { r: { suggestMin: 0, suggestMax: 25, ticks: { display: false } } },
+                plugins: { legend: { position: 'bottom' } }
+            }
+        });
+
+        // Top 10 Chart Init
+        const ctx10 = document.getElementById('top10Chart').getContext('2d');
+        top10Chart = new Chart(ctx10, {
+            type: 'bar',
+            data: { labels: [], datasets: [{ label: 'Puan', data: [], backgroundColor: '#0047BB', borderRadius: 5 }] },
+            options: { indexAxis: 'y', plugins: { legend: { display: false } }, scales: { x: { max: 100 } } }
+        });
+
+        // Region Averages Init (Dinamik Hesaplama)
+        const regionAverages = calculateRegionAverages();
+        const ctxReg = document.getElementById('regionBarChart').getContext('2d');
+        regionBarChart = new Chart(ctxReg, {
+            type: 'bar',
+            data: {
+                labels: Object.keys(regionAverages),
+                datasets: [{ label: 'Bölge Ort.', data: Object.values(regionAverages), backgroundColor: '#FFCB05' }]
+            }
+        });
+    }
+
+    function calculateRegionAverages() {
+        const sums = {};
+        allData.forEach(d => {
+            if(!sums[d.BÖLGE]) sums[d.BÖLGE] = { total: 0, count: 0 };
+            sums[d.BÖLGE].total += d.Puan;
+            sums[d.BÖLGE].count++;
+        });
+        const avgs = {};
+        for (let b in sums) avgs[b] = (sums[b].total / sums[b].count).toFixed(1);
+        return avgs;
+    }
+
+    function filterPeople() {
+        const region = document.getElementById('regionSelect').value;
+        const pSelect = document.getElementById('personSelect');
+        pSelect.innerHTML = '';
+
+        const filtered = region === 'Hepsi' ? allData : allData.filter(x => x.BÖLGE === region);
+
+        filtered.sort((a,b) => b.Puan - a.Puan).forEach(p => {
+            let opt = document.createElement('option');
+            opt.value = p['KİRALAMA SORUMLUSU'];
+            opt.innerHTML = p['KİRALAMA SORUMLUSU'] + " (" + p.Puan.toFixed(2) + ")";
+            pSelect.appendChild(opt);
+        });
+
+        const topN = filtered.slice(0, 10);
+        top10Chart.data.labels = topN.map(x => x['KİRALAMA SORUMLUSU']);
+        top10Chart.data.datasets[0].data = topN.map(x => x.Puan);
+        top10Chart.update();
+
+        document.getElementById('top10Title').innerText = region === 'Hepsi' ? "Türkiye Geneli En İyi 10 Performans" : region + " Bölgesi En İyi Performanslar";
+
+        updateView();
+    }
+
+    function updateView() {
+        const name = document.getElementById('personSelect').value;
+        const p = allData.find(x => x['KİRALAMA SORUMLUSU'] === name);
+        if(!p) return;
+
+        document.getElementById('personTitle').innerText = p['KİRALAMA SORUMLUSU'] + " Karnesi";
+        document.getElementById('kpiRegion').innerText = p.BÖLGE;
+        document.getElementById('kpiScore').innerText = p.Puan.toFixed(2);
+        document.getElementById('kpiRank').innerText = "#" + p.SIRALAMA;
+
+        radarChart.data.datasets[0].data = [
+            p['BÜTÇE DEĞİŞİM'], p.YENİLEME, p['FESİH İBRA'],
+            p.ROLLOUT, p['SABİT ARTIŞ'], p['GENEL İŞLEM']
+        ];
+        radarChart.update();
+    }
+
+    window.onload = loadData;
+</script>
+
+</body>
+</html>
